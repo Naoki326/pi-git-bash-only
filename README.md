@@ -105,6 +105,7 @@ $ wmicu process where processid=999999 get commandline
 - Both require `node` on PATH; `wmicu` also needs `wmic`.
 - PIDs are Windows PIDs (`tasklist`/`wmic` ones), not Git Bash's internal `$$`.
 - Installs are idempotent: files are marked `# pi-git-bash-only: managed` and only managed copies are ever replaced — **your own `~/bin/wmicu` / `~/bin/gbk` are never touched**.
+- **PATH note**: Git Bash injects `$HOME/bin` into PATH itself (`/etc/profile.d/env.sh`), so if you start pi from a Git Bash terminal — the common case — both tools are on PATH with zero setup. Only when pi is launched from PowerShell / Start Menu / other terminals do you need to add `~/bin` to your Windows user PATH once. `/gitbash` shows the actual state for the current session.
 - The soft-policy layer teaches the model these two traps every turn, so it reaches for `gbk` before it ever sees a mangled flag.
 
 ## Complements `pi-ast-guard`
