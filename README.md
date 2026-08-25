@@ -29,7 +29,7 @@ No-op on non-Windows platforms. No configuration required.
 
 ```bash
 # from GitHub
-pi install git:github.com/<your-username>/pi-git-bash-only
+pi install git:github.com/Naoki326/pi-git-bash-only
 
 # from npm
 pi install npm:pi-git-bash-only
@@ -38,7 +38,7 @@ pi install npm:pi-git-bash-only
 Try it without installing:
 
 ```bash
-pi -e git:github.com/<your-username>/pi-git-bash-only
+pi -e git:github.com/Naoki326/pi-git-bash-only
 ```
 
 ## See it work
