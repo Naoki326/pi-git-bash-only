@@ -1,6 +1,6 @@
 {
   "name": "pi-git-bash-only",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Enforce Git Bash as the only shell for pi on Windows: hard-block powershell/pwsh/cmd calls, inject shell policy into the system prompt, verify shell configuration, and install wmicu + gbk (GBK to UTF-8 wrappers for native exe output).",
   "keywords": ["pi-package"],
   "license": "MIT",

@@ -52,6 +52,7 @@ const SHELL_POLICY = `
 - Git Bash 调原生 exe 两铁律：
   1) MSYS 路径转换：/PID、/FI 等 /X 风格参数会被改写成 C:/Program Files/Git/X 而报错。优先用 gbk 包装（gbk taskkill /PID 123 /F，自动禁用转换），或把参数写成 //X 形式（taskkill //PID 123 //F）。
   2) 中文输出乱码≠执行失败：原生 exe 输出是 GBK。要读输出就转码——gbk 包装，或管道 | gbk。
+- bash 命令里的 Windows 路径一律用正斜杠（C:/Users/x）；带引号路径禁止以反斜杠结尾（"...dir\" 中的 \" 会转义引号，导致整条命令解析失败）。
 - wmicu 是 wmic 的 GBK→UTF-8 输出包装：wmicu process where processid=<PID> get processid,commandline。
 - tasklist/wmicu 查到的 PID 是 Windows pid，不是 Git Bash 内部 $$。`;
 
