@@ -1,0 +1,18 @@
+#!/bin/bash
+# pi-git-bash-only: managed — 本文件由 pi-git-bash-only 包安装/更新，请勿手改
+#
+# wmicu — wmic 的 GBK→UTF-8 输出包装
+#
+# 背景：wmic.exe 输出（含错误消息）是 GBK 编码，Git Bash（UTF-8 locale）下
+# 中文显示为乱码；且常见 Git Bash 发行版无 iconv，故用 node 内置
+# TextDecoder('gbk')（Node 14+ 全量 ICU 支持）。
+# 「kill 前用 CommandLine 验明进程身份」的场景中，中文路径看不清等于白核验。
+#
+# 用法同 wmic，例：
+#   wmicu process where processid=1234 get processid,commandline
+#   wmicu process where "name='node.exe'" get processid,commandline
+#
+# 注意：PID 用 Windows pid（tasklist/wmic 查到的），不是 Git Bash 内部 $$。
+# stderr 也走 GBK 转码（2>&1 合并）；退出码取管道末段，wmic 本体退出码被吃掉。
+
+wmic "$@" 2>&1 | node -e 'const c=[];process.stdin.on("data",x=>c.push(x)).on("end",()=>process.stdout.write(new TextDecoder("gbk").decode(Buffer.concat(c))))'
