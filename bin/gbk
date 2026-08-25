@@ -1,0 +1,29 @@
+#!/bin/bash
+# pi-git-bash-only: managed — 本文件由 pi-git-bash-only 包安装/更新，请勿手改
+#
+# gbk — 运行/转码 GBK 输出的 Windows 原生命令（自动禁用 MSYS 路径转换）
+#
+# 解决 Git Bash 调原生 exe 的两个固有坑：
+#   坑1 MSYS 路径转换：/PID、/FI 等 /X 风格参数被改写成 C:/Program Files/Git/X
+#       → 命令模式自动设置 MSYS_NO_PATHCONV=1，单斜杠参数原样传递
+#   坑2 GBK 乱码：中文 Windows 上原生 exe 输出 GBK，UTF-8 终端显示乱码
+#       → 输出经 node TextDecoder('gbk') 转为 UTF-8
+#
+# 用法：
+#   gbk taskkill /PID 1234 /F              # 命令模式：/参数 原样传 + 转码
+#   gbk reg query "HKLM\SOFTWARE" /v Name
+#   gbk tasklist /FI "IMAGENAME eq node.exe" /FO CSV
+#   tasklist ... | gbk                       # 管道模式：stdin GBK → stdout UTF-8
+#
+# 注意：
+# - 管道会吃掉被包装命令的退出码（与 wmicu 同）；判错请看转码后的文本输出。
+# - 管道模式下 gbk 自身退出码只反映转码是否完成。
+# - wmic 专用场景优先用 wmicu（用法一致的直通包装）。
+
+NODE_GBK='const c=[];process.stdin.on("data",x=>c.push(x)).on("end",()=>process.stdout.write(new TextDecoder("gbk").decode(Buffer.concat(c))))'
+
+if [ $# -eq 0 ]; then
+	exec node -e "$NODE_GBK"
+fi
+
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$@" 2>&1 | node -e "$NODE_GBK"

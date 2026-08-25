@@ -1,14 +1,18 @@
 /**
  * pi-git-bash-only — 在 Windows 上强制 pi 只用 Git Bash
  *
- * 四个职责：
+ * 职责：
  * 1. tool_call 硬拦截：bash 命令中调用 powershell/pwsh/cmd（含 .exe、
  *    全路径、反引号、cmd //c 形式）一律 block，reason 引导改用 bash 语法。
  * 2. before_agent_start：向 system prompt 追加 shell 政策（软规则），
- *    每轮重建、每轮追加，幂等。
+ *    每轮重建、每轮追加，幂等。政策含「原生 exe 铁律」：MSYS 路径转换
+ *    （/X 参数被改写）与 GBK 输出乱码的对策。
  * 3. session_start：静态检测 shell 归属（shellPath 设置 → Git Bash 默认
  *    路径 → PATH 扫描），非 Git Bash 时 notify 警告并给出修复建议。
- * 4. session_start：幂等安装 wmicu（wmic 的 GBK→UTF-8 包装）到 ~/bin，
+ * 4. session_start：幂等安装 bin/ 工具到 ~/bin：
+ *    - wmicu：wmic 的 GBK→UTF-8 包装
+ *    - gbk：任意原生 exe 的包装（自动禁用 MSYS 路径转换 + GBK→UTF-8），
+ *      兼管道模式（stdin 转码）
  *    仅管理带本包标记的文件，用户自建同名脚本不覆盖。
  *
  * 非 Windows 平台：不注册任何 hook，零副作用。
@@ -25,6 +29,9 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 const MANAGED_MARK = "# pi-git-bash-only: managed";
 
+// bin/ 下随包分发、安装到 ~/bin 的工具
+const BIN_TOOLS = ["wmicu", "gbk"] as const;
+
 // —— 拦截正则（33 用例验证，见文件头注释）——
 const WIN_SHELL_RE = /(?<![@\w.$-])(?:powershell|pwsh|cmd)(?:\.exe)?(?=$|[\s;&|)><"'/\\`])/gi;
 
@@ -32,7 +39,8 @@ const ADVICE =
 	"本环境已禁用 Windows 原生 shell（Git Bash only，pi-git-bash-only 包）。" +
 	"请改用 bash 语法重新实现；需要 Windows 特定功能时直接调用独立 exe：" +
 	"注册表用 reg.exe、进程用 tasklist/taskkill、进程 CommandLine 核验用 wmicu、" +
-	"服务用 sc.exe、文件 ACL 用 icacls.exe。";
+	"服务用 sc.exe、文件 ACL 用 icacls.exe。" +
+	"调原生 exe 优先用 gbk 包装（如 gbk taskkill /PID 123 /F：免 /参数 转义 + GBK 转码）。";
 
 // —— system prompt 软规则（每轮追加，等价于全局 AGENTS.md 的规则条目）——
 const SHELL_POLICY = `
@@ -41,7 +49,10 @@ const SHELL_POLICY = `
 
 - 禁止调用 powershell/pwsh/cmd（含 .exe 与全路径形式，如 powershell -Command ...、cmd /c ...）——有 tool_call hook 硬拦截，重试同形式只会再被拦一次。
 - bash 工具命令一律用 bash 语法；需要 Windows 特定功能时直接调用独立 exe：注册表 reg.exe、进程 tasklist/taskkill、进程 CommandLine 核验 wmicu、服务 sc.exe、文件 ACL icacls.exe。
-- wmicu 是 wmic 的 GBK→UTF-8 输出包装（裸 wmic 的中文在 Git Bash 下是乱码）：wmicu process where processid=<PID> get processid,commandline。
+- Git Bash 调原生 exe 两铁律：
+  1) MSYS 路径转换：/PID、/FI 等 /X 风格参数会被改写成 C:/Program Files/Git/X 而报错。优先用 gbk 包装（gbk taskkill /PID 123 /F，自动禁用转换），或把参数写成 //X 形式（taskkill //PID 123 //F）。
+  2) 中文输出乱码≠执行失败：原生 exe 输出是 GBK。要读输出就转码——gbk 包装，或管道 | gbk。
+- wmicu 是 wmic 的 GBK→UTF-8 输出包装：wmicu process where processid=<PID> get processid,commandline。
 - tasklist/wmicu 查到的 PID 是 Windows pid，不是 Git Bash 内部 $$。`;
 
 // —— shell 归属检测（纯静态，不执行命令）——
@@ -103,10 +114,11 @@ export function checkShell(globalDir: string, projectDir: string | undefined): S
 	};
 }
 
-// —— wmicu 幂等安装到 ~/bin ——
+// —— bin 工具幂等安装到 ~/bin ——
 // 只管理带 MANAGED_MARK 的文件；用户自建同名脚本不覆盖。
 
 interface InstallResult {
+	tool: string;
 	status: "installed" | "updated" | "kept" | "conflict" | "skipped";
 	detail: string;
 }
@@ -120,41 +132,53 @@ export function homeBinOnPath(homeDir?: string): boolean {
 		.some((p) => p.trim() && p.replace(/[/\\]+$/, "").toLowerCase() === homeBin.toLowerCase());
 }
 
-export function installWmicu(pkgRoot: string, homeDir?: string): InstallResult {
+export function installBins(pkgRoot: string, homeDir?: string): InstallResult[] {
 	const home = homeDir ?? os.homedir();
-	const src = path.join(pkgRoot, "bin", "wmicu");
+	const srcDir = path.join(pkgRoot, "bin");
 	const destDir = path.join(home, "bin");
-	const dest = path.join(destDir, "wmicu");
+	const results: InstallResult[] = [];
 
-	let srcContent: string;
-	try {
-		srcContent = fs.readFileSync(src, "utf8");
-	} catch {
-		return { status: "skipped", detail: `包内缺少 ${src}` };
-	}
+	for (const tool of BIN_TOOLS) {
+		const src = path.join(srcDir, tool);
+		const dest = path.join(destDir, tool);
 
-	if (fs.existsSync(dest)) {
-		let existing = "";
+		let srcContent: string;
 		try {
-			existing = fs.readFileSync(dest, "utf8");
+			srcContent = fs.readFileSync(src, "utf8");
 		} catch {
-			return { status: "conflict", detail: "~/bin/wmicu 存在但不可读，跳过" };
+			results.push({ tool, status: "skipped", detail: `包内缺少 ${src}` });
+			continue;
 		}
-		if (!existing.includes(MANAGED_MARK)) {
-			return { status: "conflict", detail: "~/bin/wmicu 已存在且非本包管理，未覆盖" };
-		}
-		if (existing === srcContent) {
-			return { status: "kept", detail: "~/bin/wmicu 已是最新" };
-		}
-	}
 
-	try {
-		fs.mkdirSync(destDir, { recursive: true });
-		fs.writeFileSync(dest, srcContent, "utf8");
-	} catch (e) {
-		return { status: "skipped", detail: `写入失败：${e instanceof Error ? e.message : String(e)}` };
+		if (fs.existsSync(dest)) {
+			let existing = "";
+			try {
+				existing = fs.readFileSync(dest, "utf8");
+			} catch {
+				results.push({ tool, status: "conflict", detail: `~/bin/${tool} 存在但不可读，跳过` });
+				continue;
+			}
+			if (!existing.includes(MANAGED_MARK)) {
+				results.push({ tool, status: "conflict", detail: `~/bin/${tool} 已存在且非本包管理，未覆盖` });
+				continue;
+			}
+			if (existing === srcContent) {
+				results.push({ tool, status: "kept", detail: `~/bin/${tool} 已是最新` });
+				continue;
+			}
+		}
+		const isUpdate = fs.existsSync(dest);
+
+		try {
+			fs.mkdirSync(destDir, { recursive: true });
+			fs.writeFileSync(dest, srcContent, "utf8");
+		} catch (e) {
+			results.push({ tool, status: "skipped", detail: `写入失败：${e instanceof Error ? e.message : String(e)}` });
+			continue;
+		}
+		results.push({ tool, status: isUpdate ? "updated" : "installed", detail: `已${isUpdate ? "更新" : "安装"}到 ${dest}` });
 	}
-	return { status: fs.existsSync(dest) ? "installed" : "updated", detail: `已安装到 ${dest}` };
+	return results;
 }
 
 // —— 入口 ——
@@ -165,11 +189,10 @@ export default function (pi: ExtensionAPI) {
 		return;
 	}
 
-	const pkgRoot = path.dirname(fileURLToPath(import.meta.url)) + path.sep + "..";
-	const pkgRootNorm = path.normalize(pkgRoot);
+	const pkgRootNorm = path.normalize(path.dirname(fileURLToPath(import.meta.url)) + path.sep + "..");
 
 	let lastShellCheck: ShellCheck | undefined;
-	let lastWmicu: InstallResult | undefined;
+	let lastBins: InstallResult[] | undefined;
 
 	// 1. 硬拦截
 	pi.on("tool_call", async (event, _ctx) => {
@@ -191,12 +214,12 @@ export default function (pi: ExtensionAPI) {
 		return { systemPrompt: event.systemPrompt + SHELL_POLICY };
 	});
 
-	// 3+4. 启动检测 + wmicu 安装
+	// 3+4. 启动检测 + bin 工具安装
 	pi.on("session_start", async (_event, ctx) => {
 		const globalDir = path.join(os.homedir(), ".pi", "agent");
 		const cwd = (ctx as { cwd?: string }).cwd;
 		lastShellCheck = checkShell(globalDir, typeof cwd === "string" ? cwd : undefined);
-		lastWmicu = installWmicu(pkgRootNorm);
+		lastBins = installBins(pkgRootNorm);
 
 		if (ctx.hasUI) {
 			try {
@@ -206,11 +229,13 @@ export default function (pi: ExtensionAPI) {
 						"error",
 					);
 				}
-				if (lastWmicu.status === "conflict" || lastWmicu.status === "skipped") {
-					ctx.ui.notify(`⚠ pi-git-bash-only：wmicu 未安装（${lastWmicu.detail}）`, "error");
-				} else if (lastWmicu.status === "installed" || lastWmicu.status === "updated") {
+				const bad = lastBins.filter((r) => r.status === "conflict" || r.status === "skipped");
+				const fresh = lastBins.filter((r) => r.status === "installed" || r.status === "updated");
+				if (bad.length > 0) {
+					ctx.ui.notify(`⚠ pi-git-bash-only：${bad.map((r) => `${r.tool}（${r.detail}）`).join("、")} 未就绪`, "error");
+				} else if (fresh.length > 0) {
 					const pathHint = homeBinOnPath() ? "" : "（注意：~/bin 不在 PATH 中，请自行加入）";
-					ctx.ui.notify(`pi-git-bash-only：wmicu ${lastWmicu.detail}${pathHint}`, "info");
+					ctx.ui.notify(`pi-git-bash-only：${fresh.map((r) => r.tool).join("、")} ${pathHint}`.trim(), "info");
 				}
 			} catch {
 				/* RPC/print 模式下 notify 可能不可用，忽略 */
@@ -220,13 +245,15 @@ export default function (pi: ExtensionAPI) {
 
 	// 状态查询命令
 	pi.registerCommand("gitbash", {
-		description: "显示 pi-git-bash-only 的 shell 检测与 wmicu 安装状态",
+		description: "显示 pi-git-bash-only 的 shell 检测与 bin 工具（wmicu/gbk）状态",
 		handler: async (_args, ctx) => {
 			const sc = lastShellCheck ? `${lastShellCheck.level === "ok" ? "✅" : "⚠"} ${lastShellCheck.detail}` : "（尚未检测，重启会话后生效）";
-			const wm = lastWmicu ? `${lastWmicu.status}: ${lastWmicu.detail}` : "（尚未安装）";
+			const bins = lastBins
+				? lastBins.map((r) => `${r.tool}: ${r.status}`).join("、")
+				: "（尚未安装）";
 			const onPath = homeBinOnPath() ? "✅ ~/bin 在 PATH" : "⚠ ~/bin 不在 PATH";
 			ctx.ui.notify(
-				`shell: ${sc}\nwmicu: ${wm}\n${onPath}\n硬拦截: powershell/pwsh/cmd → block；软规则: 每轮注入 system prompt`,
+				`shell: ${sc}\nbin 工具: ${bins}\n${onPath}\n硬拦截: powershell/pwsh/cmd → block；软规则: 每轮注入 system prompt（含 MSYS 转换/GBK 转码铁律）`,
 				"info",
 			);
 		},

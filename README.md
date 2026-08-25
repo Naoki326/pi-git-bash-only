@@ -20,7 +20,7 @@ That escapes your shell policy, breaks your quoting/encoding assumptions, and re
 | 🔒 **Hard block** | A `tool_call` hook blocks `powershell` / `pwsh` / `cmd` calls — including `.exe`, full-path, backtick, and `cmd //c` forms. The block reason tells the model exactly which bash-friendly exe to use instead. |
 | 🧠 **Soft policy** | Injects a concise shell policy into the system prompt every turn (block-list + standalone-exe alternatives), so the model rarely tries in the first place. |
 | 🔍 **Shell audit** | On startup, statically verifies which bash pi will actually use (`shellPath` setting → default Git Bash location → PATH scan). If it's not Git Bash, you get a warning with the exact settings fix. |
-| 📦 **`wmicu` included** | Idempotently installs `wmicu` — a GBK→UTF-8 wrapper for `wmic` — to `~/bin`. It's the missing piece for *"show me the command line before I kill that PID"* when your terminal is UTF-8 and wmic isn't. |
+| 📦 **`wmicu` + `gbk` included** | Idempotently installs two GBK→UTF-8 wrappers to `~/bin`: `wmicu` (wmic pass-through) and `gbk` — a general wrapper for any native exe that also disables MSYS path mangling, so `gbk taskkill /PID 123 /F` just works. |
 | 🩺 **`/gitbash`** | One command shows shell audit + wmicu + PATH status at a glance. |
 
 No-op on non-Windows platforms. No configuration required.
@@ -76,20 +76,36 @@ Otherwise, pin it in `~/.pi/agent/settings.json`:
 
 The startup audit warns you (with this exact fix) if pi would pick anything else.
 
-## `wmicu`
+## `wmicu` and `gbk`
 
-`wmic.exe` emits GBK; a UTF-8 Git Bash renders its Chinese output as mojibake — which silently defeats "verify the command line before killing that PID". `wmicu` pipes wmic through Node's built-in `TextDecoder('gbk')` (no `iconv` needed — minimal Git Bash installs don't ship one):
+Git Bash calling native exes has two built-in traps:
+
+1. **MSYS path mangling** — `/PID`, `/FI`-style flags get rewritten to `C:/Program Files/Git/PID` and the exe errors out (`taskkill /PID 123 /F` → `无效参数`).
+2. **GBK mojibake** — on Chinese Windows, native exes emit GBK; a UTF-8 terminal shows garbage, which silently defeats "verify the output before you act on it".
+
+`gbk` fixes both at once:
+
+```bash
+$ gbk taskkill /PID 99999999 /F      # single-slash flags pass through untouched
+错误: 没有找到进程 "99999999"。          # …and the message is readable UTF-8
+
+$ gbk tasklist /FI "IMAGENAME eq node.exe" /FO CSV
+"映像名称","PID",...
+
+$ tasklist ... | gbk                    # pipe mode: stdin GBK → stdout UTF-8
+```
+
+`wmicu` is the dedicated wmic wrapper (same usage as wmic):
 
 ```bash
 $ wmicu process where processid=999999 get commandline
 没有可用实例。                    # was mojibake
-
-$ wmicu process where "name='node.exe'" get processid,commandline
 ```
 
-- Same usage as `wmic`. Requires `node` and `wmic` on PATH.
+- Both require `node` on PATH; `wmicu` also needs `wmic`.
 - PIDs are Windows PIDs (`tasklist`/`wmic` ones), not Git Bash's internal `$$`.
-- Install is idempotent: the file is marked `# pi-git-bash-only: managed` and only managed copies are ever replaced — **your own `~/bin/wmicu` is never touched**.
+- Installs are idempotent: files are marked `# pi-git-bash-only: managed` and only managed copies are ever replaced — **your own `~/bin/wmicu` / `~/bin/gbk` are never touched**.
+- The soft-policy layer teaches the model these two traps every turn, so it reaches for `gbk` before it ever sees a mangled flag.
 
 ## Complements `pi-ast-guard`
 
@@ -106,7 +122,7 @@ $ wmicu process where "name='node.exe'" get processid,commandline
 
 ```bash
 pi remove npm:pi-git-bash-only        # or your git source
-rm ~/bin/wmicu                        # the only file written outside pi
+rm ~/bin/wmicu ~/bin/gbk              # the only files written outside pi
 ```
 
 ## License
